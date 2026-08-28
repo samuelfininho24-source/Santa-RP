@@ -146,7 +146,7 @@ async def idstatus_command(interaction: discord.Interaction):
         ),
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 if not TOKEN:
     raise RuntimeError("Configure a variável TOKEN no Railway.")
