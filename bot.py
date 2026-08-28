@@ -1,187 +1,92 @@
 import discord
 from discord import app_commands
-import json
-import os
-import sys
+import json, os, asyncio
 
-# =========================================================
-# SANTA BOT - SISTEMA DE ID
-# IDs: 00 até 1000
-# Comando: /id
-# =========================================================
+TOKEN=os.getenv("TOKEN")
+FILE="ids.json"
+MAX_ID=1000
+intents=discord.Intents.default()
+intents.members=True
+class SantaBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree=app_commands.CommandTree(self)
+        self.lock=asyncio.Lock()
+bot=SantaBot()
 
-TOKEN = os.getenv("TOKEN")
-ARQUIVO = "ids.json"
-
-if not TOKEN:
-    print("ERRO: a variável TOKEN não foi configurada no Railway.")
-    sys.exit(1)
-
-# Cria o arquivo de IDs se ele ainda não existir.
-if not os.path.exists(ARQUIVO):
-    with open(ARQUIVO, "w", encoding="utf-8") as f:
-        json.dump(
-            {"ultimo_id": -1, "usuarios": {}},
-            f,
-            indent=4,
-            ensure_ascii=False
-        )
-
-
-def carregar_ids():
+def load():
+    if not os.path.exists(FILE):
+        save({"ultimo_id":-1,"usuarios":{}})
     try:
-        with open(ARQUIVO, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        dados = {"ultimo_id": -1, "usuarios": {}}
-        salvar_ids(dados)
-        return dados
+        with open(FILE,"r",encoding="utf-8") as f: return json.load(f)
+    except: return {"ultimo_id":-1,"usuarios":{}}
 
+def save(data):
+    with open(FILE,"w",encoding="utf-8") as f:
+        json.dump(data,f,indent=4,ensure_ascii=False)
 
-def salvar_ids(dados):
-    # Grava primeiro em um arquivo temporário para reduzir
-    # a chance de corromper o JSON durante uma gravação.
-    temporario = ARQUIVO + ".tmp"
-
-    with open(temporario, "w", encoding="utf-8") as f:
-        json.dump(dados, f, indent=4, ensure_ascii=False)
-
-    os.replace(temporario, ARQUIVO)
-
-
-intents = discord.Intents.default()
-intents.members = True
-
-bot = discord.Client(intents=intents)
-tree = app_commands.CommandTree(bot)
-
+def fid(n): return f"{n:02d}" if n<100 else str(n)
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
+    print(f"Santa Bot online: {bot.user}")
+
+@bot.tree.command(name="id",description="Receba seu ID do servidor.")
+async def id_cmd(interaction: discord.Interaction):
+    async with bot.lock:
+        data=load()
+        uid=str(interaction.user.id)
+        if uid in data["usuarios"]:
+            mid=data["usuarios"][uid]
+            existing=True
+        else:
+            n=data["ultimo_id"]+1
+            if n>MAX_ID:
+                await interaction.response.send_message("❌ Todos os IDs de 00 até 1000 já foram distribuídos.")
+                return
+            mid=fid(n)
+            data["ultimo_id"]=n
+            data["usuarios"][uid]=mid
+            save(data)
+            existing=False
+
+    name=interaction.user.display_name
+    if "|" in name: name=name.split("|",1)[1].strip()
+    renamed=False
     try:
-        await tree.sync()
-        print("Comandos slash sincronizados.")
-    except Exception as erro:
-        print(f"Erro ao sincronizar comandos: {erro}")
+        await interaction.user.edit(nick=f"{mid} | {name}"[:32])
+        renamed=True
+    except (discord.Forbidden,discord.HTTPException): pass
 
-    print("====================================")
-    print("         SANTA BOT ONLINE")
-    print("====================================")
-    print(f"Bot: {bot.user}")
-    print("Comando: /id")
-    print("IDs: 00 até 1000")
-    print("====================================")
+    title="🆔 SANTA BOT" if existing else "🎉 ID ATRIBUÍDO"
+    desc=(f"{interaction.user.mention} já possui o ID **`{mid}`**."
+          if existing else
+          f"🎉 {interaction.user.mention} recebeu o ID **`{mid}`**!")
+    e=discord.Embed(title=title,description=desc,color=discord.Color.blue())
+    if not renamed:
+        e.add_field(name="⚠️ Apelido",value="Não consegui alterar o apelido. O ID foi salvo.",inline=False)
+    e.set_footer(text="Santa Bot • Sistema de IDs")
+    # RESPOSTA PÚBLICA: não usa ephemeral=True.
+    await interaction.response.send_message(embed=e)
 
-
-@tree.command(
-    name="id",
-    description="Receba seu ID do servidor."
-)
-async def id_command(interaction: discord.Interaction):
-    dados = carregar_ids()
-    usuario_id = str(interaction.user.id)
-
-    # Se já possui ID, devolve o mesmo ID.
-    if usuario_id in dados["usuarios"]:
-        meu_id = dados["usuarios"][usuario_id]
-
-        embed = discord.Embed(
-            title="🆔 SANTA BOT",
-            description=(
-                "Você já possui um ID registrado!\n\n"
-                f"🆔 **Seu ID:** `{meu_id}`"
-            ),
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="Santa Bot • Sistema de IDs")
-
-        await interaction.response.send_message(
-            embed=embed,
-            ephemeral=False
-        )
+@bot.tree.command(name="meuid",description="Veja seu ID.")
+async def meuid(interaction: discord.Interaction):
+    data=load(); uid=str(interaction.user.id)
+    if uid not in data["usuarios"]:
+        await interaction.response.send_message("❌ Você ainda não possui um ID. Use `/id`.")
         return
+    await interaction.response.send_message(f"🆔 {interaction.user.mention}, seu ID é **`{data['usuarios'][uid]}`**.")
 
-    # Próximo ID.
-    novo_id = dados["ultimo_id"] + 1
-
-    # Limite: 1000.
-    if novo_id > 1000:
-        embed = discord.Embed(
-            title="❌ SANTA BOT",
-            description=(
-                "Todos os IDs disponíveis já foram utilizados.\n"
-                "O limite é **1000**."
-            ),
-            color=discord.Color.red()
-        )
-
-        await interaction.response.send_message(
-            embed=embed,
-            ephemeral=False
-        )
-        return
-
-    # 0 -> 00, 1 -> 01 ... 99 -> 99, 100 -> 100.
-    meu_id = f"{novo_id:02d}" if novo_id < 100 else str(novo_id)
-
-    # Registra o ID.
-    dados["ultimo_id"] = novo_id
-    dados["usuarios"][usuario_id] = meu_id
-    salvar_ids(dados)
-
-    # Tenta colocar o ID no apelido.
-    apelido_alterado = False
-
-    try:
-        nome_atual = interaction.user.display_name
-
-        # Remove um possível ID anterior do apelido.
-        if "|" in nome_atual:
-            nome_atual = nome_atual.split("|", 1)[1].strip()
-
-        novo_nome = f"{meu_id} | {nome_atual}"[:32]
-
-        await interaction.user.edit(nick=novo_nome)
-        apelido_alterado = True
-
-    except discord.Forbidden:
-        pass
-    except discord.HTTPException:
-        pass
-
-    embed = discord.Embed(
-        title="🆔 SANTA BOT",
-        description=(
-            "Seu ID foi registrado com sucesso!\n\n"
-            f"🆔 **Seu ID:** `{meu_id}`\n"
-            f"👤 **Membro:** {interaction.user.mention}"
-        ),
-        color=discord.Color.blue()
-    )
-
-    if apelido_alterado:
-        embed.add_field(
-            name="✅ Apelido",
-            value=f"`{meu_id} | {nome_atual}`",
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="⚠️ Apelido não alterado",
-            value=(
-                "O ID foi salvo normalmente, mas não consegui alterar "
-                "seu apelido. Dê ao bot a permissão **Gerenciar Apelidos** "
-                "e deixe o cargo dele acima do usuário."
-            ),
-            inline=False
-        )
-
-    embed.set_footer(text="Santa Bot • Sistema de IDs")
-
+@bot.tree.command(name="idstatus",description="Veja o status dos IDs.")
+@app_commands.default_permissions(administrator=True)
+async def status(interaction: discord.Interaction):
+    data=load(); last=data["ultimo_id"]
     await interaction.response.send_message(
-        embed=embed,
-        ephemeral=False
+        f"📊 **Santa Bot**\nIDs distribuídos: `{len(data['usuarios'])}`\n"
+        f"Último: `{fid(last) if last>=0 else 'Nenhum'}`\n"
+        f"Próximo: `{fid(last+1) if last<MAX_ID else 'Esgotado'}`"
     )
 
-
+if not TOKEN: raise RuntimeError("Configure TOKEN no Railway.")
 bot.run(TOKEN)
